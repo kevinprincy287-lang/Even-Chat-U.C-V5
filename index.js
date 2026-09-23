@@ -129,13 +129,8 @@ app.post('/webhook', async (req, res) => {
                     }
                 }
             }
-        res.status(200).send('EVENT_RECEIVED');
+       res.status(200).send('EVENT_RECEIVED');
   } else {
     res.sendStatus(404);
   }
-});
-
-// Port listening voadio tsara
-app.listen(process.env.PORT || 3000, '0.0.0.0', () => {
-  console.log(`Ny API dia mandeha ao amin'ny port ${process.env.PORT || 3000}`);
 });
