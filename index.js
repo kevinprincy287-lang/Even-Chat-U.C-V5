@@ -50,15 +50,10 @@ app.post('/webhook', async (req, res) => {
       if (!entry.messaging || entry.messaging.length === 0) continue;
       const webhook_event = entry.messaging[0];
       const sender_psid = webhook_event.sender.id;
-      
+        
       // Tohizo eto ny ambin'ny kaody napetrakao teo aloha...
-            
-            const webhook_event = entry.messaging[0]; 
-            const sender_psid = webhook_event.sender.id; 
-
-            if (webhook_event.message && webhook_event.message.text) {
-                const userMessage = webhook_event.message.text;
-
+      if (webhook_event.message && webhook_event.message.text) {
+        const userMessage = webhook_event.message.text;
                 // Tadiavina ao amin'ny Redis cache raha efa PRO na FREE ilay olona
                 const userStatus = await redisClient.get(`status:${sender_psid}`) || 'FREE';
                 
