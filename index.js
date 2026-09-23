@@ -136,5 +136,7 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Ny API dia mandeha ao amin'ny port ${PORT}`));
+// Ovay ho tsipika iray monja Express listen io
+app.listen(process.env.PORT || 3000, '0.0.0.0', () => {
+  console.log(`Ny API dia mandeha ao amin'ny port ${process.env.PORT || 3000}`);
+});
