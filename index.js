@@ -129,7 +129,7 @@ app.post('/webhook', async (req, res) => {
                     }
                 }
             }
-       res.status(200).send('EVENT_RECEIVED');
+       
   } else {
     res.sendStatus(404);
   }
