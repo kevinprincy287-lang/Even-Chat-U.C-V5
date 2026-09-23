@@ -34,11 +34,24 @@ app.get('/webhook', (req, res) => {
 
 // 4. Fandraisana hafatra sy Fitantanana ny tolotra Free/Pro (POST)
 app.post('/webhook', async (req, res) => {
-    const body = req.body;
+  const body = req.body;
 
-    if (body.object === 'page') {
-        for (const entry of body.entry) {
-            if (!entry.messaging) continue;
+  // Valio avy hatrany ny Facebook mba tsy hisy timeout (Alohan'ny hanaovana lojika lava)
+  res.status(200).send('EVENT_RECEIVED');
+
+  // Asiana log eto mba hahitana ny test rehetra tonga
+  console.log("Payload tonga:", JSON.stringify(body));
+
+  // Lojika fanamarinana raha hafatra tena izy avy amin'ny pejy na test fotsiny
+  if (body.object === 'page' || body.sample) {
+    const entries = body.entry || (body.sample ? [{ messaging: [body.sample.value] }] : []);
+    
+    for (const entry of entries) {
+      if (!entry.messaging || entry.messaging.length === 0) continue;
+      const webhook_event = entry.messaging[0];
+      const sender_psid = webhook_event.sender.id;
+      
+      // Tohizo eto ny ambin'ny kaody napetrakao teo aloha...
             
             const webhook_event = entry.messaging[0]; 
             const sender_psid = webhook_event.sender.id; 
