@@ -1,8 +1,6 @@
-require("dotenv").config();
-
 const express = require("express");
-const redis = require("redis");
 const { GoogleGenAI } = require("@google/genai");
+const { createClient } = require("redis");
 
 const app = express();
 
@@ -10,823 +8,966 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const REDIS_URL = process.env.REDIS_URL;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+const META_GRAPH_VERSION =
+    process.env.META_GRAPH_VERSION || "v26.0";
 
 const FREE_LIMIT = 5;
 const PRO_PRICE = "25 000 Ar / volana";
 const PAYMENT_NUMBER = "0326660695";
-const MAX_HISTORY = 10;
 
+let redisClient = null;
+let gemini = null;
+
+
+// =====================================================
+// START
+// =====================================================
+
+console.log("");
 console.log("=================================");
 console.log("FAST BOT MALAGASY - STARTING");
 console.log("=================================");
 
-if (!GEMINI_API_KEY) {
-    console.error("ERROR: GEMINI_API_KEY tsy hita.");
-    process.exit(1);
-}
 
-if (!VERIFY_TOKEN) {
-    console.error("ERROR: VERIFY_TOKEN tsy hita.");
-    process.exit(1);
-}
+// =====================================================
+// GEMINI
+// =====================================================
 
-if (!PAGE_ACCESS_TOKEN) {
-    console.error("ERROR: PAGE_ACCESS_TOKEN tsy hita.");
-    process.exit(1);
-}
-
-if (!REDIS_URL) {
-    console.error("ERROR: REDIS_URL tsy hita.");
-    process.exit(1);
-}
-
-const ai = new GoogleGenAI({
-    apiKey: GEMINI_API_KEY
-});
-
-const redisClient = redis.createClient({
-    url: REDIS_URL
-});
-
-redisClient.on("error", function (error) {
-    console.error("Redis Error:", error);
-});
-
-redisClient.on("connect", function () {
-    console.log("Redis connecting...");
-});
-
-redisClient.on("ready", function () {
-    console.log("Redis ready.");
-});
-
-
-// =====================================
-// HOME
-// =====================================
-
-app.get("/", function (req, res) {
-    res.status(200).json({
-        status: "online",
-        service: "FAST BOT MALAGASY",
-        webhook: "/webhook"
-    });
-});
-
-
-// =====================================
-// HEALTH CHECK
-// =====================================
-
-app.get("/health", function (req, res) {
-    res.status(200).json({
-        server: "OK",
-        redis: redisClient.isReady ? "OK" : "NOT_READY",
-        gemini: GEMINI_API_KEY ? "OK" : "MISSING",
-        facebook: PAGE_ACCESS_TOKEN ? "OK" : "MISSING"
-    });
-});
-
-
-// =====================================
-// FACEBOOK WEBHOOK VERIFICATION
-// =====================================
-
-app.get("/webhook", function (req, res) {
-
-    const mode = req.query["hub.mode"];
-    const token = req.query["hub.verify_token"];
-    const challenge = req.query["hub.challenge"];
-
-    console.log("=================================");
-    console.log("FACEBOOK WEBHOOK GET");
-    console.log("Mode:", mode);
-    console.log("Token received:", token ? "YES" : "NO");
-    console.log("Challenge received:", challenge ? "YES" : "NO");
-    console.log("=================================");
-
-    if (
-        mode === "subscribe" &&
-        token === VERIFY_TOKEN
-    ) {
-        console.log("FACEBOOK WEBHOOK VERIFIED.");
-
-        return res
-            .status(200)
-            .send(challenge);
-    }
-
-    console.log("FACEBOOK WEBHOOK VERIFICATION FAILED.");
-
-    return res.sendStatus(403);
-});
-
-
-// =====================================
-// FACEBOOK SEND MESSAGE
-// =====================================
-
-async function sendFacebookMessage(psid, message) {
-
+if (GEMINI_API_KEY) {
     try {
-
-        const response = await fetch(
-            "https://graph.facebook.com/v26.0/me/messages",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type": "application/json"
-                },
-
-                body: JSON.stringify({
-                    recipient: {
-                        id: psid
-                    },
-
-                    messaging_type: "RESPONSE",
-
-                    message: {
-                        text: message
-                    },
-
-                    access_token: PAGE_ACCESS_TOKEN
-                })
-            }
-        );
-
-        const data = await response.json();
-
-        console.log("FACEBOOK SEND RESPONSE:");
-        console.log(JSON.stringify(data, null, 2));
-
-        if (!response.ok) {
-
-            console.error(
-                "Facebook Send API Error:",
-                JSON.stringify(data)
-            );
-
-            return false;
-        }
-
-        console.log("Facebook message sent.");
-
-        return true;
-
-    } catch (error) {
-
-        console.error(
-            "Facebook Send Error:",
-            error
-        );
-
-        return false;
-    }
-}
-
-
-// =====================================
-// GEMINI FREE
-// =====================================
-
-async function generateFreeResponse(userMessage) {
-
-    try {
-
-        const response = await ai.models.generateContent({
-
-            model: "gemini-2.5-flash",
-
-            contents: userMessage,
-
-            config: {
-
-                systemInstruction:
-                    "Ianao dia mpanampy nomerika matihanina. " +
-                    "Mamalia amin'ny teny Malagasy foana. " +
-                    "Ataovy mazava, fohy ary manampy. " +
-                    "Aza mamorona vaovao tsy fantatra."
-
-            }
+        gemini = new GoogleGenAI({
+            apiKey: GEMINI_API_KEY
         });
 
-        return (
-            response.text ||
-            "Miala tsiny, tsy nahazo valiny aho."
-        );
+        console.log("Gemini: ENABLED");
 
     } catch (error) {
-
-        console.error(
-            "Gemini FREE Error:",
-            error
+        console.log(
+            "Gemini initialization error:",
+            error.message
         );
 
-        throw error;
+        gemini = null;
     }
+
+} else {
+    console.log("Gemini: DISABLED");
 }
 
 
-// =====================================
-// GEMINI PRO WITH MEMORY
-// =====================================
+// =====================================================
+// REDIS
+// =====================================================
 
-async function generateProResponse(history) {
+async function connectRedis() {
 
-    try {
-
-        const response = await ai.models.generateContent({
-
-            model: "gemini-2.5-flash",
-
-            contents: history,
-
-            config: {
-
-                systemInstruction:
-                    "Ianao dia mpanampy nomerika PRO matihanina. " +
-                    "Mamalia amin'ny teny Malagasy foana. " +
-                    "Tadidio ny contexte sy ny resaka teo aloha. " +
-                    "Ataovy mazava, haingana ary manampy. " +
-                    "Aza averina tsy amin'ny antony ny valiny teo aloha."
-
-            }
-        });
-
-        return (
-            response.text ||
-            "Miala tsiny, tsy nahazo valiny aho."
-        );
-
-    } catch (error) {
-
-        console.error(
-            "Gemini PRO Error:",
-            error
-        );
-
-        throw error;
-    }
-}
-
-
-// =====================================
-// PRO MESSAGE
-// =====================================
-
-function getProMessage() {
-
-    return (
-        "EFA LANY NY HAFATRA FREE 5 NAO.\n\n" +
-
-        "TOLOTRA PRO\n" +
-
-        "Vidiny: " +
-        PRO_PRICE +
-        "\n\n" +
-
-        "Ny PRO dia ahafahanao:\n" +
-
-        "- Mahazo valiny haingana\n" +
-
-        "- Mitahiry sy mahatadidy ny resaka\n" +
-
-        "- Manohy mampiasa ny bot\n" +
-
-        "- Mahazo traikefa PRO\n\n" +
-
-        "FANDOAVANA:\n" +
-
-        "MVola / Airtel Money / Orange Money\n" +
-
-        "Laharana: " +
-        PAYMENT_NUMBER +
-        "\n\n" +
-
-        "Rehefa vita ny fandoavana dia alefaso eto " +
-        "ny capture na porofo fandoavana mba " +
-        "hampandehanana ny kaontinao PRO."
-    );
-}
-
-
-// =====================================
-// FACEBOOK WEBHOOK POST
-// =====================================
-
-app.post("/webhook", async function (req, res) {
-
-    console.log("=================================");
-    console.log("FACEBOOK EVENT RECEIVED");
-    console.log("=================================");
-
-    console.log(
-        JSON.stringify(
-            req.body,
-            null,
-            2
-        )
-    );
-
-    // Valio haingana i Meta
-    res.sendStatus(200);
-
-    const body = req.body;
-
-    if (!body) {
-        console.log("Empty body.");
+    if (!REDIS_URL) {
+        console.log("Redis: DISABLED");
         return;
     }
 
-    if (body.object !== "page") {
+    try {
+
+        console.log("Redis connecting...");
+
+        redisClient = createClient({
+            url: REDIS_URL
+        });
+
+        redisClient.on(
+            "error",
+            function (error) {
+                console.log(
+                    "Redis error:",
+                    error.message
+                );
+            }
+        );
+
+        await redisClient.connect();
+
+        console.log("Redis ready.");
+        console.log("Redis connected.");
+
+    } catch (error) {
 
         console.log(
-            "Not a Facebook Page event."
+            "Redis connection failed:",
+            error.message
         );
 
-        return;
+        redisClient = null;
     }
+}
 
-    const entries = body.entry || [];
 
-    for (const entry of entries) {
+// =====================================================
+// HOME
+// =====================================================
 
-        const messaging =
-            entry.messaging || [];
+app.get(
+    "/",
+    function (req, res) {
 
-        for (const event of messaging) {
+        res.json({
+            status: "online",
+            service: "FAST BOT MALAGASY",
+            webhook: "/webhook",
+            gemini: gemini
+                ? "enabled"
+                : "disabled",
+            redis: redisClient
+                ? "connected"
+                : "disabled"
+        });
+    }
+);
 
-            try {
 
-                console.log("---------------------------------");
-                console.log("MESSAGING EVENT");
+// =====================================================
+// FACEBOOK WEBHOOK VERIFICATION
+// =====================================================
 
-                if (
-                    event.sender &&
-                    event.sender.id
-                ) {
+app.get(
+    "/webhook",
+    function (req, res) {
 
-                    console.log(
-                        "Sender:",
-                        event.sender.id
-                    );
-                }
+        console.log("");
+        console.log("=================================");
+        console.log("FACEBOOK VERIFICATION REQUEST");
+        console.log("=================================");
 
-                // Ignore delivery
-                if (event.delivery) {
+        const mode =
+            req.query["hub.mode"];
 
-                    console.log(
-                        "Delivery event ignored."
-                    );
+        const token =
+            req.query["hub.verify_token"];
 
-                    continue;
-                }
+        const challenge =
+            req.query["hub.challenge"];
 
-                // Ignore read
-                if (event.read) {
+        console.log(
+            "hub.mode:",
+            mode
+        );
 
-                    console.log(
-                        "Read event ignored."
-                    );
+        console.log(
+            "hub.challenge:",
+            challenge
+                ? "RECEIVED"
+                : "MISSING"
+        );
 
-                    continue;
-                }
+        if (token) {
 
-                // Ignore postback for now
-                if (event.postback) {
-
-                    console.log(
-                        "Postback received."
-                    );
-
-                    continue;
-                }
-
-                // Need message
-                if (!event.message) {
-
-                    console.log(
-                        "No message object."
-                    );
-
-                    continue;
-                }
-
-                const senderPSID =
-                    event.sender &&
-                    event.sender.id;
-
-                if (!senderPSID) {
-
-                    console.log(
-                        "Sender PSID missing."
-                    );
-
-                    continue;
-                }
-
-                const userMessage =
-                    event.message.text;
-
-                if (!userMessage) {
-
-                    console.log(
-                        "Message has no text."
-                    );
-
-                    continue;
-                }
+            if (token === VERIFY_TOKEN) {
 
                 console.log(
-                    "USER [" +
-                    senderPSID +
-                    "]: " +
-                    userMessage
+                    "VERIFY_TOKEN: MATCH"
                 );
 
-
-                // =================================
-                // USER STATUS
-                // =================================
-
-                let userStatus =
-                    await redisClient.get(
-                        "status:" +
-                        senderPSID
-                    );
-
-                if (!userStatus) {
-
-                    userStatus = "FREE";
-
-                    await redisClient.set(
-                        "status:" +
-                        senderPSID,
-                        "FREE"
-                    );
-                }
+            } else {
 
                 console.log(
-                    "USER STATUS:",
-                    userStatus
-                );
-
-
-                // =================================
-                // PRO USER
-                // =================================
-
-                if (userStatus === "PRO") {
-
-                    console.log(
-                        "PRO USER:",
-                        senderPSID
-                    );
-
-                    const historyKey =
-                        "chat_history:" +
-                        senderPSID;
-
-                    let history = [];
-
-                    const historyRaw =
-                        await redisClient.get(
-                            historyKey
-                        );
-
-                    if (historyRaw) {
-
-                        try {
-
-                            history =
-                                JSON.parse(
-                                    historyRaw
-                                );
-
-                        } catch (error) {
-
-                            console.error(
-                                "Invalid Redis history."
-                            );
-
-                            history = [];
-                        }
-                    }
-
-                    history.push({
-
-                        role: "user",
-
-                        parts: [
-                            {
-                                text: userMessage
-                            }
-                        ]
-
-                    });
-
-                    if (
-                        history.length >
-                        MAX_HISTORY
-                    ) {
-
-                        history =
-                            history.slice(
-                                -MAX_HISTORY
-                            );
-                    }
-
-                    try {
-
-                        const aiResponse =
-                            await generateProResponse(
-                                history
-                            );
-
-                        console.log(
-                            "GEMINI PRO RESPONSE:",
-                            aiResponse
-                        );
-
-                        history.push({
-
-                            role: "model",
-
-                            parts: [
-                                {
-                                    text: aiResponse
-                                }
-                            ]
-
-                        });
-
-                        if (
-                            history.length >
-                            MAX_HISTORY
-                        ) {
-
-                            history =
-                                history.slice(
-                                    -MAX_HISTORY
-                                );
-                        }
-
-                        await redisClient.set(
-                            historyKey,
-                            JSON.stringify(
-                                history
-                            )
-                        );
-
-                        await sendFacebookMessage(
-                            senderPSID,
-                            aiResponse
-                        );
-
-                    } catch (error) {
-
-                        console.error(
-                            "PRO processing error:",
-                            error
-                        );
-
-                        await sendFacebookMessage(
-                            senderPSID,
-                            "Miala tsiny, misy olana vetivety amin'ny bot. Avereno afaka fotoana fohy."
-                        );
-                    }
-
-                    continue;
-                }
-
-
-                // =================================
-                // FREE USER
-                // =================================
-
-                const countKey =
-                    "count:" +
-                    senderPSID;
-
-                let messageCount =
-                    await redisClient.get(
-                        countKey
-                    );
-
-                if (messageCount) {
-
-                    messageCount =
-                        parseInt(
-                            messageCount,
-                            10
-                        );
-
-                } else {
-
-                    messageCount = 0;
-                }
-
-
-                // =================================
-                // FREE LIMIT
-                // =================================
-
-                if (
-                    messageCount <
-                    FREE_LIMIT
-                ) {
-
-                    messageCount++;
-
-                    await redisClient.set(
-                        countKey,
-                        String(
-                            messageCount
-                        )
-                    );
-
-                    console.log(
-                        "FREE MESSAGE " +
-                        messageCount +
-                        "/" +
-                        FREE_LIMIT
-                    );
-
-
-                    try {
-
-                        const aiResponse =
-                            await generateFreeResponse(
-                                userMessage
-                            );
-
-                        console.log(
-                            "GEMINI FREE RESPONSE:",
-                            aiResponse
-                        );
-
-                        await sendFacebookMessage(
-                            senderPSID,
-                            aiResponse
-                        );
-
-
-                        // Reached 5 messages
-                        if (
-                            messageCount ===
-                            FREE_LIMIT
-                        ) {
-
-                            console.log(
-                                "FREE LIMIT REACHED."
-                            );
-
-                            await sendFacebookMessage(
-                                senderPSID,
-                                getProMessage()
-                            );
-                        }
-
-                    } catch (error) {
-
-                        console.error(
-                            "FREE processing error:",
-                            error
-                        );
-
-                        await sendFacebookMessage(
-                            senderPSID,
-                            "Miala tsiny, misy olana vetivety amin'ny bot. Avereno afaka fotoana fohy."
-                        );
-                    }
-
-                } else {
-
-                    console.log(
-                        "FREE LIMIT EXCEEDED:",
-                        senderPSID
-                    );
-
-                    await sendFacebookMessage(
-                        senderPSID,
-                        getProMessage()
-                    );
-                }
-
-            } catch (error) {
-
-                console.error(
-                    "Webhook processing error:",
-                    error
+                    "VERIFY_TOKEN: NOT MATCH"
                 );
             }
+
+        } else {
+
+            console.log(
+                "VERIFY_TOKEN: MISSING"
+            );
         }
-    }
-});
 
-
-// =====================================
-// SERVER ERROR HANDLER
-// =====================================
-
-app.use(
-    function (error, req, res, next) {
-
-        console.error(
-            "SERVER ERROR:",
-            error
+        console.log(
+            "Render VERIFY_TOKEN:",
+            VERIFY_TOKEN
+                ? "CONFIGURED"
+                : "MISSING"
         );
 
-        if (!res.headersSent) {
+        if (
+            mode === "subscribe" &&
+            token === VERIFY_TOKEN
+        ) {
 
-            res.status(500).json({
-                error: "Internal Server Error"
-            });
+            console.log("");
+            console.log(
+                "FACEBOOK WEBHOOK VERIFICATION SUCCESS"
+            );
+            console.log("");
+
+            return res
+                .status(200)
+                .send(challenge);
+        }
+
+        console.log("");
+        console.log(
+            "FACEBOOK WEBHOOK VERIFICATION FAILED"
+        );
+        console.log("");
+
+        return res.sendStatus(403);
+    }
+);
+
+
+// =====================================================
+// FACEBOOK WEBHOOK
+// =====================================================
+
+app.post(
+    "/webhook",
+    function (req, res) {
+
+        console.log("");
+        console.log("=================================");
+        console.log("FACEBOOK EVENT RECEIVED");
+        console.log("=================================");
+
+        console.log(
+            "Object:",
+            req.body && req.body.object
+        );
+
+        // Valio 200 avy hatrany
+        res.sendStatus(200);
+
+        if (!req.body) {
+
+            console.log(
+                "Empty Facebook request."
+            );
+
+            return;
+        }
+
+        if (
+            req.body.object !== "page"
+        ) {
+
+            console.log(
+                "Not a Facebook Page event."
+            );
+
+            return;
+        }
+
+        const entries =
+            req.body.entry || [];
+
+        console.log(
+            "Entries:",
+            entries.length
+        );
+
+        for (
+            const entry of entries
+        ) {
+
+            const messaging =
+                entry.messaging || [];
+
+            console.log(
+                "Messaging events:",
+                messaging.length
+            );
+
+            for (
+                const event of messaging
+            ) {
+
+                try {
+
+                    // -----------------------------
+                    // DELIVERY
+                    // -----------------------------
+
+                    if (event.delivery) {
+
+                        console.log(
+                            "Delivery event ignored."
+                        );
+
+                        continue;
+                    }
+
+
+                    // -----------------------------
+                    // READ
+                    // -----------------------------
+
+                    if (event.read) {
+
+                        console.log(
+                            "Read event ignored."
+                        );
+
+                        continue;
+                    }
+
+
+                    // -----------------------------
+                    // SENDER
+                    // -----------------------------
+
+                    if (!event.sender) {
+
+                        console.log(
+                            "Sender missing."
+                        );
+
+                        continue;
+                    }
+
+                    const senderId =
+                        event.sender.id;
+
+                    if (!senderId) {
+
+                        console.log(
+                            "Sender ID missing."
+                        );
+
+                        continue;
+                    }
+
+
+                    // -----------------------------
+                    // POSTBACK
+                    // -----------------------------
+
+                    if (event.postback) {
+
+                        console.log("");
+                        console.log(
+                            "POSTBACK RECEIVED"
+                        );
+
+                        console.log(
+                            "Sender:",
+                            senderId
+                        );
+
+                        const postbackText =
+                            event.postback.title ||
+                            event.postback.payload ||
+                            "";
+
+                        console.log(
+                            "Postback:",
+                            postbackText
+                        );
+
+                        handleMessage(
+                            senderId,
+                            postbackText
+                        ).catch(
+                            function (error) {
+
+                                console.log(
+                                    "Postback error:",
+                                    error.message
+                                );
+                            }
+                        );
+
+                        continue;
+                    }
+
+
+                    // -----------------------------
+                    // TEXT MESSAGE
+                    // -----------------------------
+
+                    if (
+                        event.message &&
+                        event.message.text
+                    ) {
+
+                        const messageText =
+                            event.message.text;
+
+                        console.log("");
+                        console.log(
+                            "MESSAGE RECEIVED"
+                        );
+
+                        console.log(
+                            "Sender:",
+                            senderId
+                        );
+
+                        console.log(
+                            "Message:",
+                            messageText
+                        );
+
+                        handleMessage(
+                            senderId,
+                            messageText
+                        ).catch(
+                            function (error) {
+
+                                console.log(
+                                    "Message handling error:",
+                                    error.message
+                                );
+                            }
+                        );
+
+                        continue;
+                    }
+
+
+                    console.log(
+                        "Other Facebook event received."
+                    );
+
+                } catch (error) {
+
+                    console.log(
+                        "Facebook event error:",
+                        error.message
+                    );
+                }
+            }
         }
     }
 );
 
 
-// =====================================
-// START SERVER
-// =====================================
+// =====================================================
+// HANDLE MESSAGE
+// =====================================================
 
-async function startServer() {
+async function handleMessage(
+    senderId,
+    userMessage
+) {
+
+    console.log("");
+    console.log("---------------------------------");
+    console.log("HANDLE MESSAGE");
+    console.log(
+        "Sender:",
+        senderId
+    );
+    console.log(
+        "Message:",
+        userMessage
+    );
+    console.log("---------------------------------");
+
+
+    if (!userMessage) {
+        return;
+    }
+
+
+    // =================================================
+    // CHECK PRO
+    // =================================================
+
+    let status = null;
+
+    if (redisClient) {
+
+        try {
+
+            status =
+                await redisClient.get(
+                    "status:" + senderId
+                );
+
+        } catch (error) {
+
+            console.log(
+                "Redis status error:",
+                error.message
+            );
+        }
+    }
+
+
+    // =================================================
+    // PRO USER
+    // =================================================
+
+    if (status === "PRO") {
+
+        console.log(
+            "User status: PRO"
+        );
+
+        const response =
+            await generateGeminiResponse(
+                senderId,
+                userMessage,
+                true
+            );
+
+        await sendFacebookMessage(
+            senderId,
+            response
+        );
+
+        return;
+    }
+
+
+    // =================================================
+    // FREE USER
+    // =================================================
+
+    let count = 0;
+
+    if (redisClient) {
+
+        try {
+
+            const savedCount =
+                await redisClient.get(
+                    "count:" + senderId
+                );
+
+            if (savedCount) {
+
+                count =
+                    parseInt(
+                        savedCount,
+                        10
+                    );
+            }
+
+        } catch (error) {
+
+            console.log(
+                "Redis count error:",
+                error.message
+            );
+        }
+    }
+
+
+    console.log(
+        "FREE messages:",
+        count + "/" + FREE_LIMIT
+    );
+
+
+    // =================================================
+    // FREE LIMIT REACHED
+    // =================================================
+
+    if (
+        count >= FREE_LIMIT
+    ) {
+
+        console.log(
+            "FREE LIMIT REACHED"
+        );
+
+        const limitMessage =
+            "Tapitra ny hafatra FREE 5 anao.\n\n" +
+            "Raha te hanohy hiresaka amin'ny " +
+            "FAST BOT MALAGASY ianao:\n\n" +
+            "PRO: " +
+            PRO_PRICE +
+            "\n" +
+            "Fandoavana: MVola / Airtel Money / Orange Money\n" +
+            "Numéro: " +
+            PAYMENT_NUMBER +
+            "\n\n" +
+            "Alefaso ny preuve de paiement rehefa vita.";
+
+        await sendFacebookMessage(
+            senderId,
+            limitMessage
+        );
+
+        return;
+    }
+
+
+    // =================================================
+    // INCREMENT FREE COUNT
+    // =================================================
+
+    if (redisClient) {
+
+        try {
+
+            await redisClient.incr(
+                "count:" + senderId
+            );
+
+        } catch (error) {
+
+            console.log(
+                "Redis increment error:",
+                error.message
+            );
+        }
+    }
+
+
+    // =================================================
+    // GEMINI
+    // =================================================
+
+    const response =
+        await generateGeminiResponse(
+            senderId,
+            userMessage,
+            false
+        );
+
+
+    await sendFacebookMessage(
+        senderId,
+        response
+    );
+
+
+    // =================================================
+    // PRO OFFER AFTER 5TH MESSAGE
+    // =================================================
+
+    if (
+        count + 1 >= FREE_LIMIT
+    ) {
+
+        const offerMessage =
+            "🎁 Hafatra FREE 5/5.\n\n" +
+            "Raha te hanohy:\n" +
+            "PRO = " +
+            PRO_PRICE +
+            "\n" +
+            "MVola / Airtel Money / Orange Money\n" +
+            "Numéro: " +
+            PAYMENT_NUMBER;
+
+        await sendFacebookMessage(
+            senderId,
+            offerMessage
+        );
+    }
+}
+
+
+// =====================================================
+// GEMINI
+// =====================================================
+
+async function generateGeminiResponse(
+    senderId,
+    userMessage,
+    isPro
+) {
+
+    if (!gemini) {
+
+        return (
+            "Miala tsiny, Gemini mbola tsy mandeha " +
+            "amin'izao fotoana izao."
+        );
+    }
+
 
     try {
 
-        if (!redisClient.isOpen) {
+        let historyText = "";
 
-            await redisClient.connect();
-        }
 
-        console.log(
-            "Redis connected."
-        );
+        // =================================================
+        // LOAD HISTORY
+        // =================================================
 
-        app.listen(
-            PORT,
-            "0.0.0.0",
-            function () {
+        if (
+            isPro &&
+            redisClient
+        ) {
 
-                console.log(
-                    "================================="
-                );
+            try {
 
-                console.log(
-                    "FAST BOT MALAGASY"
-                );
+                const history =
+                    await redisClient.lRange(
+                        "chat_history:" + senderId,
+                        0,
+                        9
+                    );
 
-                console.log(
-                    "Server PORT: " +
-                    PORT
-                );
+                if (
+                    history &&
+                    history.length > 0
+                ) {
 
-                console.log(
-                    "FREE: 5 messages"
-                );
+                    historyText =
+                        "\n\nResaka teo aloha:\n" +
+                        history.join("\n");
+                }
 
-                console.log(
-                    "PRO: 25 000 Ar / volana"
-                );
+            } catch (error) {
 
                 console.log(
-                    "Payment: " +
-                    PAYMENT_NUMBER
-                );
-
-                console.log(
-                    "Gemini: ENABLED"
-                );
-
-                console.log(
-                    "Redis: ENABLED"
-                );
-
-                console.log(
-                    "Facebook Webhook: ENABLED"
-                );
-
-                console.log(
-                    "================================="
+                    "Redis history error:",
+                    error.message
                 );
             }
+        }
+
+
+        // =================================================
+        // GEMINI PROMPT
+        // =================================================
+
+        const prompt =
+            "Ianao dia FAST BOT MALAGASY, " +
+            "chatbot mahay miteny Malagasy." +
+            "\nValio amin'ny teny Malagasy mazava sy manampy." +
+            "\nAza mamorona vaovao tsy fantatra." +
+            "\nAtaovy fohy sy mazava ny valiny raha azo atao." +
+            historyText +
+            "\n\nUser: " +
+            userMessage;
+
+
+        console.log(
+            "Sending request to Gemini..."
+        );
+
+
+        const result =
+            await gemini.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: prompt
+            });
+
+
+        let responseText =
+            "Tsy nahazo valiny avy amin'i Gemini.";
+
+
+        if (
+            result &&
+            result.text
+        ) {
+
+            responseText =
+                result.text;
+        }
+
+
+        console.log(
+            "Gemini response received."
+        );
+
+
+        // =================================================
+        // SAVE HISTORY
+        // =================================================
+
+        if (
+            isPro &&
+            redisClient
+        ) {
+
+            try {
+
+                await redisClient.lPush(
+                    "chat_history:" + senderId,
+                    "User: " + userMessage
+                );
+
+                await redisClient.lPush(
+                    "chat_history:" + senderId,
+                    "Bot: " + responseText
+                );
+
+                await redisClient.lTrim(
+                    "chat_history:" + senderId,
+                    0,
+                    9
+                );
+
+            } catch (error) {
+
+                console.log(
+                    "Redis history save error:",
+                    error.message
+                );
+            }
+        }
+
+
+        return responseText;
+
+    } catch (error) {
+
+        console.log(
+            "Gemini error:",
+            error.message
+        );
+
+        return (
+            "Miala tsiny, nisy olana tamin'i Gemini. " +
+            "Andramo indray afaka kelikely."
+        );
+    }
+}
+
+
+// =====================================================
+// SEND FACEBOOK MESSAGE
+// =====================================================
+
+async function sendFacebookMessage(
+    recipientId,
+    message
+) {
+
+    if (!PAGE_ACCESS_TOKEN) {
+
+        console.log(
+            "PAGE_ACCESS_TOKEN is missing."
+        );
+
+        return;
+    }
+
+
+    try {
+
+        const url =
+            "https://graph.facebook.com/" +
+            META_GRAPH_VERSION +
+            "/me/messages?access_token=" +
+            encodeURIComponent(
+                PAGE_ACCESS_TOKEN
+            );
+
+
+        const response =
+            await fetch(
+                url,
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body: JSON.stringify({
+
+                        recipient: {
+                            id: recipientId
+                        },
+
+                        messaging_type:
+                            "RESPONSE",
+
+                        message: {
+                            text: message
+                        }
+                    })
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            console.log(
+                "Facebook Send API ERROR:",
+                JSON.stringify(data)
+            );
+
+            return;
+        }
+
+
+        console.log(
+            "Facebook message sent successfully."
         );
 
     } catch (error) {
 
-        console.error(
-            "SERVER STARTUP ERROR:",
-            error
+        console.log(
+            "Facebook Send API error:",
+            error.message
         );
-
-        process.exit(1);
     }
 }
+
+
+// =====================================================
+// START SERVER
+// =====================================================
+
+async function startServer() {
+
+    await connectRedis();
+
+
+    app.listen(
+        PORT,
+        function () {
+
+            console.log("");
+            console.log("=================================");
+            console.log("FAST BOT MALAGASY");
+            console.log(
+                "Server PORT:",
+                PORT
+            );
+            console.log(
+                "FREE:",
+                FREE_LIMIT,
+                "messages"
+            );
+            console.log(
+                "PRO:",
+                PRO_PRICE
+            );
+            console.log(
+                "Payment:",
+                PAYMENT_NUMBER
+            );
+            console.log(
+                "Gemini:",
+                gemini
+                    ? "ENABLED"
+                    : "DISABLED"
+            );
+            console.log(
+                "Redis:",
+                redisClient
+                    ? "ENABLED"
+                    : "DISABLED"
+            );
+            console.log(
+                "Facebook Webhook: ENABLED"
+            );
+            console.log(
+                "Meta Graph:",
+                META_GRAPH_VERSION
+            );
+            console.log("=================================");
+        }
+    );
+}
+
 
 startServer();
