@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -6,6 +5,7 @@ const redis = require("redis");
 const { GoogleGenAI } = require("@google/genai");
 
 const app = express();
+
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
@@ -20,23 +20,27 @@ const PRO_PRICE = "25 000 Ar / volana";
 const PAYMENT_NUMBER = "0326660695";
 const MAX_HISTORY = 10;
 
+console.log("=================================");
+console.log("FAST BOT MALAGASY - STARTING");
+console.log("=================================");
+
 if (!GEMINI_API_KEY) {
-    console.error("GEMINI_API_KEY tsy hita.");
+    console.error("ERROR: GEMINI_API_KEY tsy hita.");
     process.exit(1);
 }
 
 if (!VERIFY_TOKEN) {
-    console.error("VERIFY_TOKEN tsy hita.");
+    console.error("ERROR: VERIFY_TOKEN tsy hita.");
     process.exit(1);
 }
 
 if (!PAGE_ACCESS_TOKEN) {
-    console.error("PAGE_ACCESS_TOKEN tsy hita.");
+    console.error("ERROR: PAGE_ACCESS_TOKEN tsy hita.");
     process.exit(1);
 }
 
 if (!REDIS_URL) {
-    console.error("REDIS_URL tsy hita.");
+    console.error("ERROR: REDIS_URL tsy hita.");
     process.exit(1);
 }
 
@@ -52,10 +56,18 @@ redisClient.on("error", function (error) {
     console.error("Redis Error:", error);
 });
 
+redisClient.on("connect", function () {
+    console.log("Redis connecting...");
+});
 
-/* =====================================================
-   HOME
-   ===================================================== */
+redisClient.on("ready", function () {
+    console.log("Redis ready.");
+});
+
+
+// =====================================
+// HOME
+// =====================================
 
 app.get("/", function (req, res) {
     res.status(200).json({
@@ -66,22 +78,23 @@ app.get("/", function (req, res) {
 });
 
 
-/* =====================================================
-   HEALTH
-   ===================================================== */
+// =====================================
+// HEALTH CHECK
+// =====================================
 
 app.get("/health", function (req, res) {
     res.status(200).json({
         server: "OK",
         redis: redisClient.isReady ? "OK" : "NOT_READY",
-        gemini: GEMINI_API_KEY ? "OK" : "MISSING"
+        gemini: GEMINI_API_KEY ? "OK" : "MISSING",
+        facebook: PAGE_ACCESS_TOKEN ? "OK" : "MISSING"
     });
 });
 
 
-/* =====================================================
-   FACEBOOK WEBHOOK VERIFICATION
-   ===================================================== */
+// =====================================
+// FACEBOOK WEBHOOK VERIFICATION
+// =====================================
 
 app.get("/webhook", function (req, res) {
 
@@ -89,31 +102,40 @@ app.get("/webhook", function (req, res) {
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
-    console.log("Facebook verification request received.");
+    console.log("=================================");
+    console.log("FACEBOOK WEBHOOK GET");
+    console.log("Mode:", mode);
+    console.log("Token received:", token ? "YES" : "NO");
+    console.log("Challenge received:", challenge ? "YES" : "NO");
+    console.log("=================================");
 
     if (
         mode === "subscribe" &&
         token === VERIFY_TOKEN
     ) {
-        console.log("Facebook Webhook VERIFIED.");
-        return res.status(200).send(challenge);
+        console.log("FACEBOOK WEBHOOK VERIFIED.");
+
+        return res
+            .status(200)
+            .send(challenge);
     }
 
-    console.log("Facebook Webhook verification FAILED.");
+    console.log("FACEBOOK WEBHOOK VERIFICATION FAILED.");
+
     return res.sendStatus(403);
 });
 
 
-/* =====================================================
-   FACEBOOK SEND MESSAGE
-   ===================================================== */
+// =====================================
+// FACEBOOK SEND MESSAGE
+// =====================================
 
 async function sendFacebookMessage(psid, message) {
 
     try {
 
         const response = await fetch(
-            "https://graph.facebook.com/v23.0/me/messages",
+            "https://graph.facebook.com/v26.0/me/messages",
             {
                 method: "POST",
 
@@ -139,7 +161,11 @@ async function sendFacebookMessage(psid, message) {
 
         const data = await response.json();
 
+        console.log("FACEBOOK SEND RESPONSE:");
+        console.log(JSON.stringify(data, null, 2));
+
         if (!response.ok) {
+
             console.error(
                 "Facebook Send API Error:",
                 JSON.stringify(data)
@@ -148,7 +174,8 @@ async function sendFacebookMessage(psid, message) {
             return false;
         }
 
-        console.log("Message Facebook envoyé.");
+        console.log("Facebook message sent.");
+
         return true;
 
     } catch (error) {
@@ -163,62 +190,94 @@ async function sendFacebookMessage(psid, message) {
 }
 
 
-/* =====================================================
-   GEMINI FREE
-   ===================================================== */
+// =====================================
+// GEMINI FREE
+// =====================================
 
 async function generateFreeResponse(userMessage) {
 
-    const response = await ai.models.generateContent({
+    try {
 
-        model: "gemini-2.5-flash",
+        const response = await ai.models.generateContent({
 
-        contents: userMessage,
+            model: "gemini-2.5-flash",
 
-        config: {
-            systemInstruction:
-                "Ianao dia mpanampy nomerika matihanina. " +
-                "Mamalia amin'ny teny Malagasy foana. " +
-                "Ataovy mazava sy ilaina ny valiny. " +
-                "Aza mamorona vaovao tsy fantatra."
-        }
-    });
+            contents: userMessage,
 
-    return response.text ||
-        "Miala tsiny, tsy nahazo valiny aho.";
+            config: {
+
+                systemInstruction:
+                    "Ianao dia mpanampy nomerika matihanina. " +
+                    "Mamalia amin'ny teny Malagasy foana. " +
+                    "Ataovy mazava, fohy ary manampy. " +
+                    "Aza mamorona vaovao tsy fantatra."
+
+            }
+        });
+
+        return (
+            response.text ||
+            "Miala tsiny, tsy nahazo valiny aho."
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Gemini FREE Error:",
+            error
+        );
+
+        throw error;
+    }
 }
 
 
-/* =====================================================
-   GEMINI PRO AVEC MEMORY
-   ===================================================== */
+// =====================================
+// GEMINI PRO WITH MEMORY
+// =====================================
 
 async function generateProResponse(history) {
 
-    const response = await ai.models.generateContent({
+    try {
 
-        model: "gemini-2.5-flash",
+        const response = await ai.models.generateContent({
 
-        contents: history,
+            model: "gemini-2.5-flash",
 
-        config: {
-            systemInstruction:
-                "Ianao dia mpanampy nomerika PRO matihanina. " +
-                "Mamalia amin'ny teny Malagasy foana. " +
-                "Tadidio ny contexte sy ny resaka teo aloha. " +
-                "Ataovy mazava, haingana ary manampy ny mpampiasa. " +
-                "Aza averina tsy amin'ny antony ny valiny teo aloha."
-        }
-    });
+            contents: history,
 
-    return response.text ||
-        "Miala tsiny, tsy nahazo valiny aho.";
+            config: {
+
+                systemInstruction:
+                    "Ianao dia mpanampy nomerika PRO matihanina. " +
+                    "Mamalia amin'ny teny Malagasy foana. " +
+                    "Tadidio ny contexte sy ny resaka teo aloha. " +
+                    "Ataovy mazava, haingana ary manampy. " +
+                    "Aza averina tsy amin'ny antony ny valiny teo aloha."
+
+            }
+        });
+
+        return (
+            response.text ||
+            "Miala tsiny, tsy nahazo valiny aho."
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Gemini PRO Error:",
+            error
+        );
+
+        throw error;
+    }
 }
 
 
-/* =====================================================
-   PRO MESSAGE
-   ===================================================== */
+// =====================================
+// PRO MESSAGE
+// =====================================
 
 function getProMessage() {
 
@@ -226,16 +285,28 @@ function getProMessage() {
         "EFA LANY NY HAFATRA FREE 5 NAO.\n\n" +
 
         "TOLOTRA PRO\n" +
-        "Vidiny: " + PRO_PRICE + "\n\n" +
+
+        "Vidiny: " +
+        PRO_PRICE +
+        "\n\n" +
 
         "Ny PRO dia ahafahanao:\n" +
-        "- Mahazo valiny haingana\n" +
-        "- Mitahiry sy mahatadidy ny resaka\n" +
-        "- Manohy mampiasa ny bot amin'ny tolotra PRO\n\n" +
 
-        "FANDOAВANA:\n" +
+        "- Mahazo valiny haingana\n" +
+
+        "- Mitahiry sy mahatadidy ny resaka\n" +
+
+        "- Manohy mampiasa ny bot\n" +
+
+        "- Mahazo traikefa PRO\n\n" +
+
+        "FANDOAVANA:\n" +
+
         "MVola / Airtel Money / Orange Money\n" +
-        "Laharana: " + PAYMENT_NUMBER + "\n\n" +
+
+        "Laharana: " +
+        PAYMENT_NUMBER +
+        "\n\n" +
 
         "Rehefa vita ny fandoavana dia alefaso eto " +
         "ny capture na porofo fandoavana mba " +
@@ -244,31 +315,40 @@ function getProMessage() {
 }
 
 
-/* =====================================================
-   FACEBOOK WEBHOOK POST
-   ===================================================== */
+// =====================================
+// FACEBOOK WEBHOOK POST
+// =====================================
 
 app.post("/webhook", async function (req, res) {
-
-    /*
-       Valiana avy hatrany Facebook.
-       Izany no misoroka timeout.
-    */
-
-    res.sendStatus(200);
-
-    const body = req.body;
 
     console.log("=================================");
     console.log("FACEBOOK EVENT RECEIVED");
     console.log("=================================");
 
     console.log(
-        JSON.stringify(body, null, 2)
+        JSON.stringify(
+            req.body,
+            null,
+            2
+        )
     );
 
-    if (!body || body.object !== "page") {
-        console.log("Tsy Page event.");
+    // Valio haingana i Meta
+    res.sendStatus(200);
+
+    const body = req.body;
+
+    if (!body) {
+        console.log("Empty body.");
+        return;
+    }
+
+    if (body.object !== "page") {
+
+        console.log(
+            "Not a Facebook Page event."
+        );
+
         return;
     }
 
@@ -276,53 +356,89 @@ app.post("/webhook", async function (req, res) {
 
     for (const entry of entries) {
 
-        const messaging = entry.messaging || [];
+        const messaging =
+            entry.messaging || [];
 
         for (const event of messaging) {
 
             try {
 
-                /* =====================================
-                   SENDER
-                   ===================================== */
+                console.log("---------------------------------");
+                console.log("MESSAGING EVENT");
 
                 if (
-                    !event.sender ||
-                    !event.sender.id
+                    event.sender &&
+                    event.sender.id
                 ) {
+
+                    console.log(
+                        "Sender:",
+                        event.sender.id
+                    );
+                }
+
+                // Ignore delivery
+                if (event.delivery) {
+
+                    console.log(
+                        "Delivery event ignored."
+                    );
+
                     continue;
                 }
 
-                const senderPSID = event.sender.id;
+                // Ignore read
+                if (event.read) {
 
+                    console.log(
+                        "Read event ignored."
+                    );
 
-                /* =====================================
-                   IGNORE DELIVERY / READ
-                   ===================================== */
-
-                if (
-                    event.delivery ||
-                    event.read
-                ) {
                     continue;
                 }
 
+                // Ignore postback for now
+                if (event.postback) {
 
-                /* =====================================
-                   TEXT MESSAGE
-                   ===================================== */
+                    console.log(
+                        "Postback received."
+                    );
 
-                if (
-                    !event.message ||
-                    !event.message.text
-                ) {
+                    continue;
+                }
+
+                // Need message
+                if (!event.message) {
+
+                    console.log(
+                        "No message object."
+                    );
+
+                    continue;
+                }
+
+                const senderPSID =
+                    event.sender &&
+                    event.sender.id;
+
+                if (!senderPSID) {
+
+                    console.log(
+                        "Sender PSID missing."
+                    );
+
                     continue;
                 }
 
                 const userMessage =
-                    event.message.text.trim();
+                    event.message.text;
 
                 if (!userMessage) {
+
+                    console.log(
+                        "Message has no text."
+                    );
+
                     continue;
                 }
 
@@ -334,13 +450,14 @@ app.post("/webhook", async function (req, res) {
                 );
 
 
-                /* =====================================
-                   USER STATUS
-                   ===================================== */
+                // =================================
+                // USER STATUS
+                // =================================
 
                 let userStatus =
                     await redisClient.get(
-                        "status:" + senderPSID
+                        "status:" +
+                        senderPSID
                     );
 
                 if (!userStatus) {
@@ -348,24 +465,26 @@ app.post("/webhook", async function (req, res) {
                     userStatus = "FREE";
 
                     await redisClient.set(
-                        "status:" + senderPSID,
+                        "status:" +
+                        senderPSID,
                         "FREE"
                     );
                 }
 
                 console.log(
-                    "STATUS: " + userStatus
+                    "USER STATUS:",
+                    userStatus
                 );
 
 
-                /* =====================================
-                   PRO USER
-                   ===================================== */
+                // =================================
+                // PRO USER
+                // =================================
 
                 if (userStatus === "PRO") {
 
                     console.log(
-                        "PRO USER: " +
+                        "PRO USER:",
                         senderPSID
                     );
 
@@ -385,45 +504,42 @@ app.post("/webhook", async function (req, res) {
                         try {
 
                             history =
-                                JSON.parse(historyRaw);
+                                JSON.parse(
+                                    historyRaw
+                                );
 
                         } catch (error) {
 
-                            history = [];
-
-                            console.log(
-                                "Memory Redis invalid."
+                            console.error(
+                                "Invalid Redis history."
                             );
+
+                            history = [];
                         }
                     }
 
-
-                    /* =================================
-                       ADD USER MESSAGE
-                       ================================= */
-
                     history.push({
+
                         role: "user",
+
                         parts: [
                             {
                                 text: userMessage
                             }
                         ]
-                    });
 
+                    });
 
                     if (
                         history.length >
                         MAX_HISTORY
                     ) {
+
                         history =
-                            history.slice(-MAX_HISTORY);
+                            history.slice(
+                                -MAX_HISTORY
+                            );
                     }
-
-
-                    /* =================================
-                       GEMINI PRO
-                       ================================= */
 
                     try {
 
@@ -433,47 +549,39 @@ app.post("/webhook", async function (req, res) {
                             );
 
                         console.log(
-                            "GEMINI PRO: " +
+                            "GEMINI PRO RESPONSE:",
                             aiResponse
                         );
 
-
-                        /* =============================
-                           ADD AI RESPONSE
-                           ============================= */
-
                         history.push({
+
                             role: "model",
+
                             parts: [
                                 {
                                     text: aiResponse
                                 }
                             ]
-                        });
 
+                        });
 
                         if (
                             history.length >
                             MAX_HISTORY
                         ) {
+
                             history =
-                                history.slice(-MAX_HISTORY);
+                                history.slice(
+                                    -MAX_HISTORY
+                                );
                         }
-
-
-                        /* =============================
-                           SAVE REDIS MEMORY
-                           ============================= */
 
                         await redisClient.set(
                             historyKey,
-                            JSON.stringify(history)
+                            JSON.stringify(
+                                history
+                            )
                         );
-
-
-                        /* =============================
-                           SEND FACEBOOK
-                           ============================= */
 
                         await sendFacebookMessage(
                             senderPSID,
@@ -483,7 +591,7 @@ app.post("/webhook", async function (req, res) {
                     } catch (error) {
 
                         console.error(
-                            "Gemini PRO Error:",
+                            "PRO processing error:",
                             error
                         );
 
@@ -497,38 +605,49 @@ app.post("/webhook", async function (req, res) {
                 }
 
 
-                /* =====================================
-                   FREE USER
-                   ===================================== */
+                // =================================
+                // FREE USER
+                // =================================
 
                 const countKey =
-                    "count:" + senderPSID;
+                    "count:" +
+                    senderPSID;
 
                 let messageCount =
                     await redisClient.get(
                         countKey
                     );
 
-                messageCount =
-                    messageCount
-                        ? parseInt(
+                if (messageCount) {
+
+                    messageCount =
+                        parseInt(
                             messageCount,
                             10
-                        )
-                        : 0;
+                        );
+
+                } else {
+
+                    messageCount = 0;
+                }
 
 
-                /* =====================================
-                   FREE MESSAGE mbola misy
-                   ===================================== */
+                // =================================
+                // FREE LIMIT
+                // =================================
 
-                if (messageCount < FREE_LIMIT) {
+                if (
+                    messageCount <
+                    FREE_LIMIT
+                ) {
 
                     messageCount++;
 
                     await redisClient.set(
                         countKey,
-                        messageCount.toString()
+                        String(
+                            messageCount
+                        )
                     );
 
                     console.log(
@@ -547,14 +666,9 @@ app.post("/webhook", async function (req, res) {
                             );
 
                         console.log(
-                            "GEMINI FREE: " +
+                            "GEMINI FREE RESPONSE:",
                             aiResponse
                         );
-
-
-                        /* =============================
-                           SEND AI RESPONSE
-                           ============================= */
 
                         await sendFacebookMessage(
                             senderPSID,
@@ -562,10 +676,7 @@ app.post("/webhook", async function (req, res) {
                         );
 
 
-                        /* =============================
-                           MESSAGE FAHA-5
-                           ============================= */
-
+                        // Reached 5 messages
                         if (
                             messageCount ===
                             FREE_LIMIT
@@ -584,7 +695,7 @@ app.post("/webhook", async function (req, res) {
                     } catch (error) {
 
                         console.error(
-                            "Gemini FREE Error:",
+                            "FREE processing error:",
                             error
                         );
 
@@ -594,17 +705,10 @@ app.post("/webhook", async function (req, res) {
                         );
                     }
 
-                }
-
-
-                /* =====================================
-                   FREE LANY
-                   ===================================== */
-
-                else {
+                } else {
 
                     console.log(
-                        "FREE LIMIT EXCEEDED: " +
+                        "FREE LIMIT EXCEEDED:",
                         senderPSID
                     );
 
@@ -626,35 +730,38 @@ app.post("/webhook", async function (req, res) {
 });
 
 
-/* =====================================================
-   ERROR HANDLER
-   ===================================================== */
+// =====================================
+// SERVER ERROR HANDLER
+// =====================================
 
-app.use(function (error, req, res, next) {
+app.use(
+    function (error, req, res, next) {
 
-    console.error(
-        "SERVER ERROR:",
-        error
-    );
+        console.error(
+            "SERVER ERROR:",
+            error
+        );
 
-    if (!res.headersSent) {
+        if (!res.headersSent) {
 
-        res.status(500).json({
-            error: "Internal Server Error"
-        });
+            res.status(500).json({
+                error: "Internal Server Error"
+            });
+        }
     }
-});
+);
 
 
-/* =====================================================
-   START SERVER
-   ===================================================== */
+// =====================================
+// START SERVER
+// =====================================
 
 async function startServer() {
 
     try {
 
         if (!redisClient.isOpen) {
+
             await redisClient.connect();
         }
 
@@ -676,7 +783,8 @@ async function startServer() {
                 );
 
                 console.log(
-                    "Server PORT: " + PORT
+                    "Server PORT: " +
+                    PORT
                 );
 
                 console.log(
@@ -688,7 +796,8 @@ async function startServer() {
                 );
 
                 console.log(
-                    "Payment: " + PAYMENT_NUMBER
+                    "Payment: " +
+                    PAYMENT_NUMBER
                 );
 
                 console.log(
@@ -712,7 +821,7 @@ async function startServer() {
     } catch (error) {
 
         console.error(
-            "Server startup error:",
+            "SERVER STARTUP ERROR:",
             error
         );
 
